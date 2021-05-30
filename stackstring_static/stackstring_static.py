@@ -7,9 +7,11 @@ import struct
 from ida_ua import *
 from ida_allins import *
 from idautils import *
-#from ida_funcs import *
+from ida_funcs import *
 from idc import *
 import ida_kernwin
+import ida_struct
+import sys
 
 def extract_unicode(data):
     pat = re.compile(r'^(?:[\x20-\x7E][\x00]){2,}')
@@ -33,9 +35,9 @@ class StackString(object):
         self.static_xor_key = static_xor_key
 
     def rename_vars(self):
-        stack = GetFrame(self.start)
-        stack_size = GetStrucSize(stack)
-        args_and_ret_size = stack_size - GetFrameLvarSize(self.start)
+        stack = idc.get_func_attr(self.start, FUNCATTR_FRAME)
+        stack_size = ida_struct.get_struc_size(stack)
+        args_and_ret_size = stack_size - idc.get_func_attr(self.start, FUNCATTR_FRSIZE)
 
         for offset, name, size in StructMembers(stack):
             postfix = stack_size - offset - args_and_ret_size
@@ -43,7 +45,7 @@ class StackString(object):
                 self.stack_chars[postfix] = 0 # initialize vars
                 if name.find('var_') == -1:
                     #postfix = stack_size - offset - args_and_ret_size
-                    SetMemberName(stack, offset, 'var_{:X}'.format(postfix))
+                    idc.set_member_name(stack, offset, 'var_{:X}'.format(postfix))
 
     def store_bytes_to_reg(self, r, b):
         if r == procregs.sp.reg or r == procregs.bp.reg:
@@ -150,7 +152,8 @@ class StackString(object):
             self.rename_vars()
         #except TypeError: # caused by StructMembers()
         except:
-            return
+            print sys.exc_info()[0]
+            pass
 
         for head in Heads(self.start, self.end):
             self.dprint('{:#x}'.format(head))
@@ -167,10 +170,10 @@ class StackString(object):
                 elif insn.Op1.type == o_reg and insn.Op2.dtype == dt_byte and insn.Op2.type == o_mem: # e.g., mov     al, ds:byte_100040F8
                     self.store_bytes_to_reg(insn.Op1.reg, Byte(insn.Op2.addr))
 
-                elif insn.Op1.type == o_displ and GetOpnd(head, 0).find('var_') != -1 and insn.Op2.type == o_reg and (insn.Op2.dtype == dt_byte or insn.Op2.dtype == dt_word): # e.g., mov     [esp+180h+var_127], cl
+                elif insn.Op1.type == o_displ and idc.print_operand(head, 0).find('var_') != -1 and insn.Op2.type == o_reg and (insn.Op2.dtype == dt_byte or insn.Op2.dtype == dt_word): # e.g., mov     [esp+180h+var_127], cl
                 #elif insn.Op1.type == o_displ and GetOpnd(head, 0).find('var_') != -1 and insn.Op2.type == o_reg: # e.g., mov [rsp+258h+var_1F0], eax (index register)
                     try:
-                        var_hex = self.parse_and_get_var_hex(GetOpnd(head, 0))
+                        var_hex = self.parse_and_get_var_hex(idc.print_operand(head, 0))
                     except (AttributeError, IndexError, ValueError): # e.g., var_10.S_un
                         continue
                     if insn.Op2.reg in self.regs_w_value:
@@ -179,13 +182,13 @@ class StackString(object):
                 elif insn.Op1.type == o_displ and insn.Op2.type == o_imm: # e.g., mov     [esp+188h+var_130], 6Ah/2E32h/3362646Fh
                     #print 'o_displ = o_imm'
                     try:
-                        var_hex = self.parse_and_get_var_hex(GetOpnd(head, 0))
+                        var_hex = self.parse_and_get_var_hex(idc.print_operand(head, 0))
                     except (AttributeError, IndexError, ValueError): # e.g., var_10.S_un
                         continue
                     self.store_bytes_to_vars(var_hex, insn.Op2.value)
                 elif insn.Op1.type == o_reg and insn.Op2.type == o_displ: # e.g., mov     eax, [rsp+258h+var_1F0]
                     try:
-                        var_hex = self.parse_and_get_var_hex(GetOpnd(head, 1))
+                        var_hex = self.parse_and_get_var_hex(idc.print_operand(head, 1))
                     except (AttributeError, IndexError, ValueError): # e.g., var_10.S_un
                         continue
                     if var_hex in self.stack_chars:
@@ -198,7 +201,7 @@ class StackString(object):
                 elif insn.Op1.type == o_displ:
                     # e.g., xor     [esp+eax+384h+var_2A4], bl
                     try:
-                        var_hex = self.parse_and_get_var_hex(GetOpnd(head, 0))
+                        var_hex = self.parse_and_get_var_hex(idc.print_operand(head, 0))
                     except (AttributeError, IndexError, ValueError): # e.g., var_10.S_un
                         continue
                     str_var_hex = 'var_{:X}'.format(var_hex)
@@ -208,10 +211,10 @@ class StackString(object):
                         self.store_key_to_name(str_var_hex, insn.Op2.value)
 
             elif insn.itype == NN_and:
-                if insn.Op1.type == o_displ and GetOpnd(head, 0).find('var_') != -1 and insn.Op2.value == 0:
+                if insn.Op1.type == o_displ and idc.print_operand(head, 0).find('var_') != -1 and insn.Op2.value == 0:
                     # e.g., and     [ebp+var_24], 0
                     try:
-                        var_hex = self.parse_and_get_var_hex(GetOpnd(head, 0))
+                        var_hex = self.parse_and_get_var_hex(idc.print_operand(head, 0))
                     except (AttributeError, IndexError, ValueError): # e.g., var_10.S_un
                         continue
                     self.store_byte_to_var(var_hex, 0)
@@ -230,7 +233,7 @@ class StackString(object):
             elif (insn.itype == NN_movdqu or insn.itype == NN_movups) and insn.Op1.type == o_displ:
                 # e.g., movdqu  [ebp+var_27C], xmm1
                 try:
-                    var_hex = self.parse_and_get_var_hex(GetOpnd(head, 0))
+                    var_hex = self.parse_and_get_var_hex(idc.print_operand(head, 0))
                 except (AttributeError, IndexError, ValueError): # e.g., var_10.S_un
                     continue
                 if insn.Op2.reg in self.regs_w_value:
@@ -238,7 +241,7 @@ class StackString(object):
 
             # for o_displ operand with base+index registers (increment index)
             elif insn.itype == NN_inc and insn.Op1.type == o_reg and insn.Op1.reg in self.regs_w_value:
-                self.dprint('{}: incremented {}->{}'.format(GetOpnd(head, 0), self.regs_w_value[insn.Op1.reg], self.regs_w_value[insn.Op1.reg]+1))
+                self.dprint('{}: incremented {}->{}'.format(idc.print_operand(head, 0), self.regs_w_value[insn.Op1.reg], self.regs_w_value[insn.Op1.reg]+1))
                 self.regs_w_value[insn.Op1.reg] += 1
 
         strings = {}
@@ -301,7 +304,7 @@ class StackString(object):
                     self.dprint('null-terminated chars detected (unicode)')
                     stack_var = 'var_{:X}'.format(k + ulen)
                     try:
-                        #print ''.join(uresult)
+                        print ''.join(uresult)
                         #strings[stack_var] = ''.join(uresult)[:-1].decode('utf-16')
                         if extract_unicode(''.join(uresult)):
                             strings[stack_var] = extract_unicode(''.join(uresult))[0]
@@ -337,7 +340,7 @@ class StackString(object):
         if len(result) > 0:
             print('the string is not null-terminated: {}'.format(repr(''.join(result))))
 
-        stack = GetFrame(self.start)
+        stack = idc.get_func_attr(self.start, FUNCATTR_FRAME)
         results = []
         for offset, name, size in StructMembers(stack):
             if name in strings:
@@ -347,13 +350,13 @@ class StackString(object):
                     else:
                         k = self.static_xor_key
                     res = ''.join([chr(ord(x) ^ k) for x in strings[name][:-1]])
-                    #print k
+                    print k
                     print '{} (xor-decoded): {} ({})'.format(name, repr(res), repr(strings[name]))
                     res = res + ' (decoded)'
                 else:
                     res = strings[name]
                 if res[0] != '\x00':
-                    SetMemberComment(stack, offset, repr(res.rstrip('\x00')), 1)
+                    idc.set_member_cmt(stack, offset, repr(res.rstrip('\x00')), 1)
                     results.append(repr(res.rstrip('\x00')))
 
         # set comment at the function start ea
@@ -365,7 +368,7 @@ class StackString(object):
                 set_func_cmt(self.start, 'a lot of stack strings recovered (need to be checked)', True)
 
         # restore analyzed names in stack
-        AnalyzeArea(self.start, self.end)
+        idc.plan_and_wait(self.start, self.end)
 
 class SSSForm(ida_kernwin.Form):
     def __init__(self):
@@ -391,7 +394,7 @@ stackstring_static
             self.SetControlValue(self.cCurrentOnly, True)
             self.EnableField(self.iXorValue, False)                
         if fid == self.cDecode.id:
-            #print('cDecode changed: {}'.format(self.cDecode.checked))
+            print('cDecode changed: {}'.format(self.cDecode.checked))
             #if self.cDecode.checked:
             self.EnableField(self.iXorValue, True)
             #else:
@@ -407,25 +410,27 @@ def main():
     r = f.Execute()
     if r == 1: # Run
         if f.cCurrentOnly.checked:
-            start = GetFunctionAttr(here(), FUNCATTR_START)
-            end = GetFunctionAttr(here(), FUNCATTR_END)
+            start = get_func_attr(here(), FUNCATTR_START)
+            end = get_func_attr(here(), FUNCATTR_END)
             ss = StackString(start, end, f.cDebug.checked, f.cDecode.checked, f.iXorValue.value)
-            ss.traverse()
+            try:
+                ss.traverse()
+            except:
+                print "error"
         else:
             for start in Functions():
-                end = GetFunctionAttr(start, FUNCATTR_END)
+                end = get_func_attr(start, FUNCATTR_END)
                 ss = StackString(start, end, f.cDebug.checked, f.cDecode.checked, f.iXorValue.value)
-                ss.traverse()
+                try:
+                    ss.traverse()
+                except:
+                    print "erorr"
     else:  # Cancel
         print 'cancel'
 
-    Refresh()
+    ida_kernwin.refresh_idaview_anyway()
     print '----------------------------------------------'
     print 'done'
 
 if __name__ == '__main__':
     main()
-
-
-
-
